@@ -1,0 +1,184 @@
+experiment_group: slotcontrast_slotformer
+experiment_name: movi_c_slotformer
+
+globals:
+  NUM_SLOTS: 11
+  SLOT_DIM: 64
+  DINO_MODEL: vit_small_patch14_dinov2
+  FEAT_DIM: 384
+  NUM_PATCHES: 576
+  NUM_GPUS: 1
+  BATCH_SIZE_PER_GPU: 64
+  TOTAL_BATCH_SIZE: "${mul: ${.NUM_GPUS}, ${.BATCH_SIZE_PER_GPU}}"
+  BASE_LR: 0.0001
+  # SlotFormer params
+  BI_FRAMES: 1
+
+trainer:
+  max_steps: 100000
+  log_every_n_steps: 2500
+  val_check_interval: 2500
+  gradient_clip_val: 0.05
+
+optimizer:
+  name: Adam
+  lr: 0.0004
+  lr_scheduler:
+    name: exp_decay_with_warmup
+    warmup_steps: 2500
+    decay_steps: ${trainer.max_steps}
+
+model:
+  input_type: video
+  masks_to_visualize: ["decoder", "dynamics_predictor"]
+  load_weights: "checkpoints/movi_c.ckpt"
+  modules_to_load:
+    initializer: initializer
+    processor: processor
+    encoder: encoder
+    decoder: decoder
+  visualize: false
+  visualize_every_n_steps: 10000
+  losses:
+    loss_dynamics:
+      name: DynamicsLoss
+      pred_key: dynamics_predictor.next_state
+      target_key: processor.state
+
+  loss_weights:
+    loss_dynamics: 1.0
+
+  initializer:
+    name: FixedLearnedInit
+    n_slots: ${globals.NUM_SLOTS}
+    dim: ${globals.SLOT_DIM}
+
+  encoder:
+    backbone:
+      name: TimmExtractor
+      model: ${globals.DINO_MODEL}
+      features:
+      - vit_block12
+      - vit_block_keys12
+      frozen: true
+      pretrained: true
+      model_kwargs:
+        dynamic_img_size: True
+    output_transform:
+      name: networks.two_layer_mlp
+      inp_dim: ${globals.FEAT_DIM}
+      outp_dim: ${globals.SLOT_DIM}
+      hidden_dim: "${mul: ${globals.FEAT_DIM}, 2}"
+      layer_norm: true
+
+  grouper:
+    name: SlotAttention
+    inp_dim: ${globals.SLOT_DIM}
+    slot_dim: ${globals.SLOT_DIM}
+    n_iters: 2
+    use_mlp: true
+
+  latent_processor:
+    first_step_corrector_args:
+      n_iters: 3
+
+  decoder:
+    name: MLPDecoder
+    inp_dim: ${globals.SLOT_DIM}
+    outp_dim: ${globals.FEAT_DIM}
+    hidden_dims: [1024, 1024, 1024]
+    n_patches: ${globals.NUM_PATCHES}
+
+  predictor:
+    name: networks.TransformerEncoder
+    dim: ${globals.SLOT_DIM}
+    n_blocks: 1
+    n_heads: 4
+
+  dynamics_predictor:
+    name: SlotFormer
+    num_slots: ${globals.NUM_SLOTS}
+    slot_size: ${globals.SLOT_DIM}
+    history_len: ${globals.BI_FRAMES}
+    t_pe: "sin"
+    d_model: "${mul: ${globals.SLOT_DIM}, 2}"
+    ffn_dim: "${mul: ${globals.SLOT_DIM}, 8}"
+    num_layers: 1
+
+val_metrics:
+  ari:
+    name: VideoARI
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_ari:
+    name: ImageARI
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  mbo:
+    name: VideoIoU
+    matching: overlap
+    ignore_background: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  image_mbo:
+    name: ImageIoU
+    matching: overlap
+    ignore_background: true
+    video_input: true
+    pred_key: decoder_masks_hard
+    true_key: segmentations
+  predicted_ari:
+    name: VideoARI
+    ignore_background: true
+    pred_key: dynamics_predictor_masks_hard
+    true_key: segmentations
+  predicted_image_ari:
+    name: ImageARI
+    ignore_background: true
+    video_input: true
+    pred_key: dynamics_predictor_masks_hard
+    true_key: segmentations
+  predicted_mbo:
+    name: VideoIoU
+    matching: overlap
+    ignore_background: true
+    pred_key: dynamics_predictor_masks_hard
+    true_key: segmentations
+  predicted_image_mbo:
+    name: ImageIoU
+    matching: overlap
+    ignore_background: true
+    video_input: true
+    pred_key: dynamics_predictor_masks_hard
+    true_key: segmentations
+
+dataset:
+  train_shards: "movi_c/movi_c-train-{000000..000304}.tar"
+  val_shards: "movi_c/movi_c-validation-{000000..000007}.tar"
+  batch_size: ${globals.BATCH_SIZE_PER_GPU}
+  val_batch_size: 16
+  val_size: 250
+  num_workers: 4
+  num_val_workers: 2
+  train_pipeline:
+    video_size: 24
+    chunk_size: 4
+    sample_one_chunk_per_video: true
+    keys: [video]
+    shuffle_size: 512
+    transforms:
+      name: movi_train
+      type: video
+      input_size: 336
+      h_flip_prob: 0.5
+  val_pipeline:
+    use_chunks: false
+    keys: [video, segmentations]
+    transforms:
+      name: movi_val
+      type: video
+      input_size: 336
+      num_classes: 11
