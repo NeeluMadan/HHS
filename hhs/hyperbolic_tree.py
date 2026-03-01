@@ -1,9 +1,16 @@
-"""Project vectors into the Lorentz (hyperbolic) manifold and build parent-child trees."""
+"""Project vectors onto a Riemannian manifold and build parent-child trees.
+
+Supported manifolds (via geoopt):
+  - Lorentz (hyperboloid model)
+  - Poincaré ball
+  - Sphere
+  - Euclidean
+"""
 
 import sys
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 
 # Add local geoopt checkout to the import path.
 _GEOOPT_ROOT = str(
@@ -15,45 +22,85 @@ sys.path.insert(0, _GEOOPT_ROOT)
 
 import torch
 import torch.nn.functional as F
+from geoopt.manifolds.base import Manifold
+from geoopt.manifolds.euclidean import Euclidean
 from geoopt.manifolds.lorentz import Lorentz
+from geoopt.manifolds.sphere import Sphere
+from geoopt.manifolds.stereographic import PoincareBall
 
 
-def project_to_manifold(vectors: torch.Tensor, manifold: Lorentz) -> torch.Tensor:
-    """Map vectors from tangent space at the origin onto the Lorentz manifold.
+def project_to_manifold(vectors: torch.Tensor, manifold: Manifold) -> torch.Tensor:
+    """Map Euclidean vectors onto the given manifold.
 
-    Prepends a zeros column (time dimension) and applies the exponential map
-    from the origin (expmap0), which is the geometrically correct way to map
-    Euclidean vectors onto the hyperboloid.
+    Projection strategy depends on the manifold type:
+      - Lorentz: prepend zeros column + expmap0  (N, D) -> (N, D+1)
+      - Poincaré ball: expmap0                   (N, D) -> (N, D)
+      - Sphere: projx (normalize to unit norm)   (N, D) -> (N, D)
+      - Euclidean: identity                      (N, D) -> (N, D)
 
     Args:
         vectors: Tensor of shape (N, D) in Euclidean space.
-        manifold: A geoopt Lorentz manifold instance.
+        manifold: A geoopt manifold instance.
 
     Returns:
-        Tensor of shape (N, D+1) on the hyperboloid.
+        Tensor of shape (N, D') on the manifold.
     """
     if vectors.shape[0] == 0:
-        return vectors.new_empty(0, vectors.shape[-1] + 1)
-    padded = F.pad(vectors, (1, 0, 0, 0))  # (N, D) -> (N, D+1) with zero at index 0
-    return manifold.expmap0(padded)
+        extra = 1 if isinstance(manifold, Lorentz) else 0
+        return vectors.new_empty(0, vectors.shape[-1] + extra)
+
+    if isinstance(manifold, Lorentz):
+        padded = F.pad(vectors, (1, 0, 0, 0))  # (N, D) -> (N, D+1)
+        return manifold.expmap0(padded)
+    elif isinstance(manifold, PoincareBall):
+        return manifold.expmap0(vectors)
+    elif isinstance(manifold, Sphere):
+        return manifold.projx(vectors)
+    elif isinstance(manifold, Euclidean):
+        return vectors
+    else:
+        raise ValueError(f"Unsupported manifold type: {type(manifold).__name__}")
+
+
+def pairwise_distances(
+    x: torch.Tensor, y: torch.Tensor, manifold: Manifold
+) -> torch.Tensor:
+    """Compute pairwise geodesic distances between two sets of points.
+
+    Uses manifold.cdist when available, otherwise falls back to broadcasting
+    manifold.dist.
+
+    Args:
+        x: Tensor of shape (P, D) on the manifold.
+        y: Tensor of shape (C, D) on the manifold.
+        manifold: A geoopt manifold instance.
+
+    Returns:
+        Tensor of shape (P, C) of pairwise distances.
+    """
+    try:
+        return manifold.cdist(x, y)
+    except (NotImplementedError, TypeError):
+        # Fallback: broadcast dist (e.g. PoincareBall has no cdist)
+        return manifold.dist(x.unsqueeze(1), y.unsqueeze(0)).squeeze(-1)
 
 
 def build_parent_child_trees(
     parents: torch.Tensor,
     children: torch.Tensor,
-    manifold: Lorentz,
+    manifold: Manifold,
     parent_labels: Optional[List[str]] = None,
     child_labels: Optional[List[str]] = None,
 ) -> Dict[str, Set[str]]:
     """Build parent-child trees by assigning each child to its nearest parent.
 
-    Uses manifold.cdist to compute pairwise geodesic distances, then assigns
-    each child to the parent with smallest distance.
+    Computes pairwise geodesic distances, then assigns each child to the
+    parent with the smallest distance.
 
     Args:
-        parents: Tensor of shape (P, D) on the Lorentz manifold.
-        children: Tensor of shape (C, D) on the Lorentz manifold.
-        manifold: A geoopt Lorentz manifold instance.
+        parents: Tensor of shape (P, D) on the manifold.
+        children: Tensor of shape (C, D) on the manifold.
+        manifold: A geoopt manifold instance.
         parent_labels: Optional list of P string labels for parents.
         child_labels: Optional list of C string labels for children.
 
@@ -79,7 +126,7 @@ def build_parent_child_trees(
         return tree
 
     # Pairwise geodesic distances: shape (P, C)
-    dist_matrix = manifold.cdist(parents, children)
+    dist_matrix = pairwise_distances(parents, children, manifold)
 
     # For each child, find the nearest parent
     nearest_parent_indices = torch.argmin(dist_matrix, dim=0)  # shape (C,)
@@ -90,9 +137,18 @@ def build_parent_child_trees(
     return tree
 
 
+MANIFOLD_REGISTRY = {
+    "lorentz": lambda curvature: Lorentz(k=curvature, learnable=False),
+    "poincare": lambda curvature: PoincareBall(c=curvature, learnable=False),
+    "sphere": lambda curvature: Sphere(),
+    "euclidean": lambda curvature: Euclidean(ndim=1),
+}
+
+
 def build_trees(
     parent_vectors: torch.Tensor,
     child_vectors: torch.Tensor,
+    manifold: Union[str, Manifold] = "lorentz",
     curvature: float = 1.0,
     parent_labels: Optional[List[str]] = None,
     child_labels: Optional[List[str]] = None,
@@ -102,21 +158,33 @@ def build_trees(
     Args:
         parent_vectors: Tensor of shape (P, D) in Euclidean space.
         child_vectors: Tensor of shape (C, D) in Euclidean space.
-        curvature: Negative curvature k for the Lorentz manifold (default: 1.0).
+        manifold: Manifold name (str) or a geoopt Manifold instance.
+            Supported names: "lorentz", "poincare", "sphere", "euclidean".
+        curvature: Curvature parameter (only used when manifold is a string;
+            maps to k for Lorentz, c for Poincaré; ignored for Sphere/Euclidean).
         parent_labels: Optional string labels for parents.
         child_labels: Optional string labels for children.
 
     Returns:
         Dict mapping parent labels to sets of assigned child labels.
     """
-    if parent_vectors.dtype != torch.float64:
+    # Construct manifold if given as string
+    if isinstance(manifold, str):
+        name = manifold.lower()
+        if name not in MANIFOLD_REGISTRY:
+            raise ValueError(
+                f"Unknown manifold '{manifold}'. "
+                f"Choose from: {list(MANIFOLD_REGISTRY.keys())}"
+            )
+        manifold = MANIFOLD_REGISTRY[name](curvature)
+
+    if isinstance(manifold, (Lorentz, PoincareBall)) and parent_vectors.dtype != torch.float64:
         warnings.warn(
-            "Lorentz manifold operations are more stable in float64. "
+            f"{type(manifold).__name__} manifold operations are more stable in float64. "
             "Consider passing .double() tensors.",
             stacklevel=2,
         )
 
-    manifold = Lorentz(k=curvature, learnable=False)
     manifold = manifold.to(dtype=parent_vectors.dtype, device=parent_vectors.device)
 
     parents_proj = project_to_manifold(parent_vectors, manifold)
@@ -134,7 +202,7 @@ if __name__ == "__main__":
     import json
 
     parser = argparse.ArgumentParser(
-        description="Build parent-child trees in Lorentz (hyperbolic) space."
+        description="Build parent-child trees on a Riemannian manifold."
     )
     parser.add_argument(
         "--parents", type=str, required=True,
@@ -145,8 +213,13 @@ if __name__ == "__main__":
         help="Path to a .pt file containing child vectors (C, D).",
     )
     parser.add_argument(
+        "--manifold", type=str, default="lorentz",
+        choices=list(MANIFOLD_REGISTRY.keys()),
+        help="Manifold type (default: lorentz).",
+    )
+    parser.add_argument(
         "--curvature", type=float, default=1.0,
-        help="Negative curvature k of the Lorentz manifold (default: 1.0).",
+        help="Curvature parameter (k for Lorentz, c for Poincaré; default: 1.0).",
     )
     parser.add_argument(
         "--output", type=str, default=None,
@@ -157,7 +230,10 @@ if __name__ == "__main__":
     parent_vecs = torch.load(args.parents, weights_only=True)
     child_vecs = torch.load(args.children, weights_only=True)
 
-    trees = build_trees(parent_vecs, child_vecs, curvature=args.curvature)
+    trees = build_trees(
+        parent_vecs, child_vecs,
+        manifold=args.manifold, curvature=args.curvature,
+    )
 
     # Convert sets to sorted lists for JSON serialization
     trees_json = {k: sorted(v) for k, v in trees.items()}
