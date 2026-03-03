@@ -29,18 +29,22 @@ from geoopt.manifolds.sphere import Sphere
 from geoopt.manifolds.stereographic import PoincareBall
 
 
-def project_to_manifold(vectors: torch.Tensor, manifold: Manifold) -> torch.Tensor:
+def project_to_manifold(
+    vectors: torch.Tensor, manifold: Manifold, method: str = "expmap0"
+) -> torch.Tensor:
     """Map Euclidean vectors onto the given manifold.
 
-    Projection strategy depends on the manifold type:
-      - Lorentz: prepend zeros column + expmap0  (N, D) -> (N, D+1)
-      - Poincaré ball: expmap0                   (N, D) -> (N, D)
-      - Sphere: projx (normalize to unit norm)   (N, D) -> (N, D)
-      - Euclidean: identity                      (N, D) -> (N, D)
+    Projection strategy depends on the manifold type and method:
+      - Lorentz + expmap0: prepend zeros column + expmap0  (N, D) -> (N, D+1)
+      - Lorentz + projx:   prepend zeros column + projx    (N, D) -> (N, D+1)
+      - Poincaré ball: expmap0                             (N, D) -> (N, D)
+      - Sphere: projx (normalize to unit norm)             (N, D) -> (N, D)
+      - Euclidean: identity                                (N, D) -> (N, D)
 
     Args:
         vectors: Tensor of shape (N, D) in Euclidean space.
         manifold: A geoopt manifold instance.
+        method: Projection method for Lorentz — "expmap0" or "projx".
 
     Returns:
         Tensor of shape (N, D') on the manifold.
@@ -51,6 +55,8 @@ def project_to_manifold(vectors: torch.Tensor, manifold: Manifold) -> torch.Tens
 
     if isinstance(manifold, Lorentz):
         padded = F.pad(vectors, (1, 0, 0, 0))  # (N, D) -> (N, D+1)
+        if method == "projx":
+            return manifold.projx(padded)
         return manifold.expmap0(padded)
     elif isinstance(manifold, PoincareBall):
         return manifold.expmap0(vectors)
@@ -83,6 +89,32 @@ def pairwise_distances(
     except (NotImplementedError, TypeError):
         # Fallback: broadcast dist (e.g. PoincareBall has no cdist)
         return manifold.dist(x.unsqueeze(1), y.unsqueeze(0)).squeeze(-1)
+
+
+def dist_from_origin(points: torch.Tensor, manifold: Manifold) -> torch.Tensor:
+    """Compute geodesic distance from each point to the manifold origin.
+
+    For Sphere, uses the normalized centroid of the input points as origin.
+
+    Args:
+        points: Tensor of shape (N, D) on the manifold.
+        manifold: A geoopt manifold instance.
+
+    Returns:
+        Tensor of shape (N,) with distances to origin.
+    """
+    if isinstance(manifold, Lorentz):
+        return manifold.dist0(points)
+    elif isinstance(manifold, PoincareBall):
+        return manifold.dist0(points)
+    elif isinstance(manifold, Euclidean):
+        return points.norm(dim=-1)
+    elif isinstance(manifold, Sphere):
+        mean = points.mean(dim=0)
+        mean = mean / mean.norm()
+        return manifold.dist(mean.unsqueeze(0), points).squeeze(-1)
+    else:
+        raise ValueError(f"Unsupported manifold type: {type(manifold).__name__}")
 
 
 def build_parent_child_trees(
@@ -138,10 +170,21 @@ def build_parent_child_trees(
 
 
 MANIFOLD_REGISTRY = {
-    "lorentz": lambda curvature: Lorentz(k=curvature, learnable=False),
-    "poincare": lambda curvature: PoincareBall(c=curvature, learnable=False),
-    "sphere": lambda curvature: Sphere(),
-    "euclidean": lambda curvature: Euclidean(ndim=1),
+    "sphere": Sphere(),
+    "lorentz_1_exp": Lorentz(k=1.0, learnable=False),
+    "lorentz_1_projx": Lorentz(k=1.0, learnable=False),
+    "euclidean": Euclidean(ndim=1),
+    # --- commented out for easy swap between experiments ---
+    # "lorentz_01": Lorentz(k=0.1, learnable=False),
+    # "lorentz_05": Lorentz(k=0.5, learnable=False),
+    # "lorentz_1": Lorentz(k=1.0, learnable=False),
+    # "lorentz_2": Lorentz(k=2.0, learnable=False),
+    # "lorentz_5": Lorentz(k=5.0, learnable=False),
+    # "poincare_01": PoincareBall(c=0.1, learnable=False),
+    # "poincare_05": PoincareBall(c=0.5, learnable=False),
+    # "poincare_1": PoincareBall(c=1.0, learnable=False),
+    # "poincare_2": PoincareBall(c=2.0, learnable=False),
+    # "poincare_5": PoincareBall(c=5.0, learnable=False),
 }
 
 
@@ -176,7 +219,7 @@ def build_trees(
                 f"Unknown manifold '{manifold}'. "
                 f"Choose from: {list(MANIFOLD_REGISTRY.keys())}"
             )
-        manifold = MANIFOLD_REGISTRY[name](curvature)
+        manifold = MANIFOLD_REGISTRY[name]
 
     if isinstance(manifold, (Lorentz, PoincareBall)) and parent_vectors.dtype != torch.float64:
         warnings.warn(

@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+
+# .pt and .json trees and distances files
+videosaur_dino_v1*.pt
+videosaur_dino_v1*.json
