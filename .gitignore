@@ -7,3 +7,8 @@ __pycache__/
 # .pt and .json trees and distances files
 videosaur_dino_v1*.pt
 videosaur_dino_v1*.json
+
+# Ignore back-ups
+*.bak
+*.bak2
+/hhs/misc
