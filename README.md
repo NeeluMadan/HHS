@@ -16,7 +16,7 @@ We find that:
 - There is a **curvature–task tradeoff**: low curvature (*c* = 0.2) matches or outperforms Euclidean on parent slot retrieval, while moderate curvature (*c* = 0.5) achieves better inter-level separation.
 
 <p align="center">
-  <img src="Figures/teaser_conceptual.pdf" width="50%" alt="Lorentz hyperboloid hierarchy teaser"/>
+  <img src="Figures/teaser_conceptual.png" width="50%" alt="Lorentz hyperboloid hierarchy teaser"/>
 </p>
 
 ---
@@ -32,7 +32,7 @@ Our pipeline is fully **post-hoc** — no modification to the original training 
 5. **Analyse** whether hyperbolic distances better reflect parent–child structure than Euclidean cosine distances.
 
 <p align="center">
-  <img src="Figures/main_figure_1.pdf" width="90%" alt="Pipeline overview"/>
+  <img src="Figures/main_figure_1.jpg" width="90%" alt="Pipeline overview"/>
 </p>
 
 ---
