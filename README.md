@@ -1,7 +1,5 @@
 # A Hyperbolic Perspective on Hierarchical Structure in Object-Centric Scene Representations
 
-**CVPR 2026 Workshop Paper**
-
 [Neelu Madan](https://github.com/NeeluMadan) · Àlex Pujol · Andreas Møgelmose · Sergio Escalera · Kamal Nasrollahi · Graham W. Taylor · Thomas B. Moeslund
 
 *Aalborg University · University of Barcelona · Centre de Visió per Computador · Milestone Systems · Pioneer Centre for AI · University of Guelph · Vector Institute*
