@@ -1,0 +1,30 @@
+# Core deep learning
+# Install PyTorch with CUDA support: https://pytorch.org/get-started/locally/
+torch
+torchvision
+
+# Hyperbolic geometry
+geoopt
+hyptorch
+
+# Data loading
+webdataset
+
+# Scientific computing
+numpy
+scipy
+scikit-learn
+einops
+
+# Visualization
+matplotlib
+seaborn
+pandas
+plotly
+Pillow
+umap-learn
+
+# Utilities
+tqdm
+networkx
+jupyter
